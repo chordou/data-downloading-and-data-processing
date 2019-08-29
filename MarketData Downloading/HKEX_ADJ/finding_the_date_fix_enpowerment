@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Jul 22 19:30:03 2019
+
+@author: Carol
+"""
+import pymongo
+import pandas as pd
+import numpy as np
+import os
+import time
+import sys
+sys.path.append('/home/pingan/PycharmProjects/test/DataUpdate/tools')
+from mongodb import query_part
+
+
+
+
+
+def findFactor():
+    empty_af = []
+    wrong_cal = []
+    strange_factor = []
+    error = []
+    factor_dic = {}
+    big_error = []
+
+    for name in ticker_list:
+        t = time.time()
+        h = query_part(name = name, adjust = {'$in':['no', 'all']}, feature = 'close', date = {'$gte':date},
+                       collection_name = 'HKEX_ALL', db_name = 'MarketData')
+
+        if h.empty:
+            continue
+
+
+        else:
+
+            h['date'] = pd.to_datetime(h['date'], unit='s')
+
+            h = h.dropna(how='any')
+
+            h.set_index('date', inplace=True)
+            h = h.sort_index()
+            adj_h = h[h['adjust'] == 'all']['value'].to_frame()
+            adj_h.rename(columns = {'value':'adj_px'}, inplace=True)
+            no_h = h[h['adjust'] == 'no']['value'].to_frame()
+            no_h.rename(columns = {'value':'px'}, inplace=True)
+            h = adj_h.join(no_h, how = 'outer')
+            h['factor'] = h['adj_px'] / h['px']
+
+
+            af = query_part(name = name, feature = "price_af", collection_name = 'HKEX_AF_Daily', db_name = 'MarketDataUpdate')
+
+
+            if af.empty:
+                empty_af.append(name) #the list contains stock which does not have adjustment factor
+                error.append([name, np.sum(np.abs(h['adj_px']-h['px']))])
+
+
+            else:
+                af['date']=pd.to_datetime(af['date'], unit='s')
+                af.set_index('date', inplace=True)
+                h=h.join(af, how='left')
+                uniq_af = af['value'].unique()
+
+                factor = uniq_af[np.where(np.round(h['px'][-1] * h['value'].unique()[-1]/ uniq_af, 3) == h['adj_px'][-1])]
+
+                if len(factor)>1:
+                    strange_factor.append(name)
+                elif len(factor)==0:
+                    empty_af.append(name)
+                    continue
+
+                factor=factor[0]
+                factor_dic['ticker'] = name
+                factor_dic['factor'] = factor
+                df_factor = pd.DataFrame([factor_dic])
+                df_factor.columns = ['ticker', 'factor']
+                df_factor.to_csv('/home/pingan/PycharmProjects/test/calculate_AF/fix_enpowerment.csv',index= False, header= False, mode = 'a')
+
+                h['adj_px_cal_n'] = h['px']*h['value']/factor  #calculating formula
+                h['adj_px_cal_n'] = np.round(h['adj_px_cal_n'],3)
+
+                if np.sum(np.abs(h['adj_px_cal_n']-h['adj_px']))>0:
+                    wrong_cal.append(name)
+
+                error.append([name, np.sum(np.abs(h['adj_px_cal_n']-h['adj_px']))])
+                print(name, error[-1])
+            print(error)
+
+
+
+    #print(empty_af)
+    #print(wrong_cal)
+
+
+    return  error
+
+def outputError():
+    error = findFactor()
+    df = pd.DataFrame(error, columns= ['name', 'wrong_cal_ticker'])
+    df.to_csv('/home/pingan/PycharmProjects/test/calculate_AF/cal_check-error.csv')
+
+
+
+
+
+
+if __name__ == '__main__':
+
+    universe = pd.read_csv('/home/pingan/PycharmProjects/test/DataUpdate/full_list.csv')
+    ticker_list = universe['ticker']
+    ticker_list = [str(x) for x in ticker_list]
+
+    ticker_list = [x for x in ticker_list if x!='478']
+
+    #ticker_list = ['5','402','8023']
+
+    date = int(pd.to_datetime('2005/01/01').value // 1e9)
+    findFactor()
+    #outputError()
