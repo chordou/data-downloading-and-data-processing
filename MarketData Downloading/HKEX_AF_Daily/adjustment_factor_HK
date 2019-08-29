@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Jul 11 19:16:16 2019
+
+@author: Carol
+"""
+
+import pymongo
+import pandas as pd
+import numpy as np
+import copy
+import json
+import sys
+sys.path.append('/home/pingan/PycharmProjects/test/DataUpdate/tools')
+from mongodb import query_all, tomongo
+
+
+
+
+# url = "mongodb://10.63.16.76:27017"
+# client = pymongo.MongoClient(url)
+# db=client['MarketDataUpdate']
+# col=db['HKEX_AF_Daily']
+#
+# def write_df_to_mongo(db, df):
+#     data_insert=json.loads(df.to_json(orient='records'))
+#     db.insert_many(data_insert)
+    
+def calculate_cumulative_factors(temp_df):
+    temp_df['price_af']=1
+    temp_df['volume_af']=1
+    for i in range(len(temp_df)):
+        if temp_df.loc[i,'flag'] ==1 or temp_df.loc[i,'flag'] ==3:
+            if i ==0:
+                if temp_df.loc[i,'operator'] ==1:
+                    temp_df.loc[i,'price_af']=1/temp_df.loc[i,'factor']
+                elif temp_df.loc[i,'operator'] ==2:
+                    temp_df.loc[i,'price_af']=temp_df.loc[i,'factor']
+                else:
+                    raise Exception('Wrong operator')
+            else:
+                if temp_df.loc[i,'operator'] ==1:
+                    temp_df.loc[i,'price_af']=temp_df.loc[i-1,'price_af'] / temp_df.loc[i, 'factor']
+                elif temp_df.loc[i,'operator'] ==2:
+                    temp_df.loc[i,'price_af']=temp_df.loc[i-1,'price_af']*temp_df.loc[i, 'factor']
+        else:
+            if i ==0:
+                pass
+            else:
+                temp_df.loc[i,'price_af']=temp_df.loc[i-1,'price_af']
+        if temp_df.loc[i,'flag'] ==2 or temp_df.loc[i,'flag'] ==3:
+            if i ==0:
+                if temp_df.loc[i,'operator'] ==1:
+                    temp_df.loc[i,'volume_af']=1/temp_df.loc[i,'factor']
+                elif temp_df.loc[i,'operator'] ==2:
+                    temp_df.loc[i,'volume_af']=temp_df.loc[i,'factor']
+                else:
+                    raise Exception('Wrong operator')
+            else:
+                if temp_df.loc[i,'operator'] ==1:
+                    temp_df.loc[i,'volume_af']=temp_df.loc[i-1,'volume_af'] / temp_df.loc[i, 'factor']
+                elif temp_df.loc[i,'operator'] ==2:
+                    temp_df.loc[i,'volume_af']=temp_df.loc[i-1,'volume_af']*temp_df.loc[i, 'factor']    
+        else:
+           if i ==0:
+               pass
+           else:
+               temp_df.loc[i,'volume_af']=temp_df.loc[i-1,'volume_af']
+    return temp_df
+    
+data = query_all(collection_name = 'HKEX_AF', db_name = 'MarketDataUpdate')
+#data.drop(columns=['Unnamed: 0'], inplace=True)
+z=[x[:len(x)-10] for x in data['ticker']]
+full_list=list(set(z))
+data['date']=pd.to_datetime(data['date'])
+#data['date']=(pd.to_datetime(data['date'])-pd.to_datetime('1970/01/01')).dt.total_seconds()
+
+
+#test_list = [ '738']
+
+
+
+data['name'] = z
+for stock in full_list:
+#for stock in test_list:
+    print(stock)
+    temp_df = copy.deepcopy(data[data['name']==stock])
+    temp_df = temp_df.sort_values('date',ascending=False)
+    temp_df=temp_df.reset_index()
+    temp_df = calculate_cumulative_factors(temp_df)
+    temp_df=temp_df.drop_duplicates('date', keep='last')
+    temp_df['date']=temp_df['date'] + pd.DateOffset(-1)
+    r = pd.date_range(start=np.min([pd.to_datetime('2000/01/01'),np.min(temp_df['date'])]), end=pd.to_datetime('2019/08/16'))
+    temp_df=temp_df.set_index('date').reindex(r).fillna(np.nan).rename_axis('date').reset_index()
+    temp_df=temp_df.fillna(method='bfill')
+    temp_df=temp_df[['date', 'price_af', 'volume_af', 'name']]
+    temp_df['date'] = (temp_df['date']-pd.to_datetime('1970/01/01')).dt.total_seconds()
+    temp_df['date'] = temp_df['date'].astype(int)
+    temp_df['name']=stock
+    temp_df=temp_df.fillna(1)
+    for  i in [ 'volume_af']:
+        temp = copy.deepcopy(temp_df[['date', i, 'name']])
+        temp['category']='Equity'
+        temp['feature'] = i
+        temp=temp.rename(columns={i:'value'})
+        #tomongo(temp, collection_name = 'HKEX_AF_Daily', to_mongo = True, replace = False, db_name = 'MarketDataUpdate')
+    for i in ['price_af']:
+        pr = copy.deepcopy(temp_df[['date',i, 'name']])
+        pr['category'] = 'Equity'
+        pr['feature'] = i
+        pr = pr.rename(columns = {i: 'value'})
+        #tomongo(pr, collection_name = 'HKEX_AF_Daily', to_mongo = True, replace = False, db_name = 'MarketDataUpdate')
+        pr.to_csv('/home/pingan/PycharmProjects/test/HKEX_AF_Daily/daily_af/' + stock + '.csv', index= False )
